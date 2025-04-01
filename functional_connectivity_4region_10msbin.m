@@ -435,7 +435,7 @@ for j=1:size(FR_pref,2)
 end
 saveas(gcf,'C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\SingleUnits_10msbin_Fig1\sig_selective_chandepth_map.fig');
 
-%% ALM SC SNr CD corr
+%% PSTH to CD_projection
 CD_proj_all={};
 trial_all={};
 for jgroup=1:4
@@ -538,6 +538,10 @@ for jgroup=1:4
     CD_proj_all{jgroup,2}=cdprj_L_correct;
     CD_proj_all{jgroup,3}=cdprj_R_error;
     CD_proj_all{jgroup,4}=cdprj_L_error;
+    CD_proj_delay_all{jgroup,1}=cdprj_R_correct(find(t<-0.2&t>-delaytime),:); %取delay阶段
+    CD_proj_delay_all{jgroup,2}=cdprj_L_correct(find(t<-0.2&t>-delaytime),:);
+    CD_proj_delay_all{jgroup,3}=cdprj_R_error(find(t<-0.2&t>-delaytime),:);
+    CD_proj_delay_all{jgroup,4}=cdprj_L_error(find(t<-0.2&t>-delaytime),:);
     trial_all{jgroup,1}=i_yes_trial_correct;
     trial_all{jgroup,2}=i_no_trial_correct;
     trial_all{jgroup,3}=i_yes_trial_error;
@@ -548,8 +552,7 @@ for jgroup=1:4
     psth_all{jgroup,4}=psth_L_error;
 end
 
-%% Functional_connectivity_ XH_250323
-% 首先需要 run 'ALM SC SNr CD corr' session
+%% Functional_connectivity_ all_timepoint
 
 region = {'SC';'MRN';'SNr';'ALM'};
 z = 0;
@@ -673,16 +676,266 @@ for regionA = 1: 3
         
     end
 end
+save('C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures1_10msbin\FCresults.mat', ...
+        'Pearson_correlation_all', 'Cross_correlation_all', 'Granger_causality_A_all', 'Granger_causality_B_all', ...
+        'Mutual_information_all', 'Transfer_entropy_A_all', 'Transfer_entropy_B_all');
+
+%% Functional_connectivity_ delay
+region = {'SC';'MRN';'SNr';'ALM'};
+z = 0;
+Pearson_correlation_all = cell(6,4); 
+Cross_correlation_all = cell(6,4); 
+Granger_causality_A_all = cell(6,4); 
+Granger_causality_B_all = cell(6,4); 
+Mutual_information_all = cell(6,4); 
+Transfer_entropy_A_all = cell(6,4); 
+Transfer_entropy_B_all = cell(6,4); 
+javaaddpath('D:\Matlab2024a\matlab_jidt\infodynamics.jar');
+
+for regionA = 1: 3
+    for regionB = regionA+1: 4
+
+        z = z+1;
+        trial_number = cell(1, 4);
+        for i_type = 1: 4
+            trial_number{i_type} = intersect( trial_all{regionA, i_type}, trial_all{regionB, i_type} );
+        end
+        Index_A = cell(4, 1);
+        Index_B = cell(4, 1);
+        for i = 1:4
+            Index_A{i} = find(ismember(trial_all{regionA, i}, trial_number{i}));
+            Index_B{i} = find(ismember(trial_all{regionB, i}, trial_number{i}));
+        end
+
+        Pearson_correlation = cell(1, 4);
+        Cross_correlation = cell(1, 4);
+        Granger_causality_A = cell(1, 4);
+        Granger_causality_B = cell(1, 4);
+        Mutual_information = cell(1, 4);
+        Transfer_entropy_A = cell(1, 4);
+        Transfer_entropy_B = cell(1, 4);
+
+        for i_condition = 1:4 % 四种条件/trial type
+            CD_proj_selectedA = CD_proj_delay_all{regionA, i_condition}(:, Index_A{i_condition});
+            CD_proj_selectedB = CD_proj_delay_all{regionB, i_condition}(:, Index_B{i_condition});
+            if size(CD_proj_selectedA) ~= size(CD_proj_selectedB)
+                error('两个矩阵的大小必须相等，Timepoints × Trials');
+            end
+            trial_number = size(CD_proj_selectedA, 2);
+
+            Pearson_correlation{i_condition} = NaN(trial_number, 1); 
+            Cross_correlation{i_condition} = []; 
+            Granger_causality_A{i_condition} = NaN(trial_number, 1);  
+            Granger_causality_B{i_condition} = NaN(trial_number, 1);  
+            Mutual_information{i_condition} = NaN(trial_number, 1); 
+            Transfer_entropy_A{i_condition} = NaN(trial_number, 1);  
+            Transfer_entropy_B{i_condition} = NaN(trial_number, 1);  
+
+            for func_conn = 1:trial_number
+                Pearson_correlation{i_condition} (func_conn) = corr(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn), 'Type', 'Pearson');
+                
+                [cc, lags] = xcorr(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn), 'coeff');
+                Cross_correlation{i_condition}(func_conn,:) = cc; 
+
+                GCmatrix = [CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn)];
+                [AIC,BIC,moAIC,moBIC] = tsdata_to_infocrit(GCmatrix', 20, 'LWR', false);  % Model order estimation, 'LWR' or 'OLS'
+                [A, SIG] = tsdata_to_var(GCmatrix', moBIC, 'LWR'); % VAR model estimation, or 'actual', 'moAIC', numerical value)
+                [F, Fsig] = var_to_pwcgc(A, SIG, GCmatrix', 'LWR', 'F'); % select GC value or p-value 
+                Granger_causality_A{i_condition} (func_conn) = F(1, 2); 
+                Granger_causality_B{i_condition} (func_conn) = F(2, 1); % effective connectivity
+                
+                miCalc = javaObject('infodynamics.measures.continuous.kraskov.MutualInfoCalculatorMultiVariateKraskov1');
+                miCalc.initialise(1, 1);  
+                miCalc.setObservations(octaveToJavaDoubleArray(CD_proj_selectedA(:, func_conn)), octaveToJavaDoubleArray(CD_proj_selectedB(:, func_conn)));
+                Mutual_information{i_condition} (func_conn) = miCalc.computeAverageLocalOfObservations();
+                
+                teCalc = javaObject('infodynamics.measures.continuous.kraskov.TransferEntropyCalculatorKraskov');
+                teCalc.initialise(1);  % 设置历史长度lag为 1 (Schreiber k=1)
+                teCalc.setProperty('k', '4');  % 设置 Kraskov 方法的参数 K = 4（使用 4 个最近邻点）
+                teCalc.setProperty("NOISE_LEVEL_TO_ADD", "0");
+                teCalc.setObservations(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn));
+                Transfer_entropy_A{i_condition} (func_conn) = teCalc.computeAverageLocalOfObservations();
+                teCalc.setObservations(CD_proj_selectedB(:, func_conn), CD_proj_selectedA(:, func_conn));
+                Transfer_entropy_B{i_condition} (func_conn) = teCalc.computeAverageLocalOfObservations();
+
+            end
+        end
+
+        Pearson_correlation_all{z, 1} = Pearson_correlation{1};  
+        Pearson_correlation_all{z, 2} = Pearson_correlation{2};  
+        Pearson_correlation_all{z, 3} = Pearson_correlation{3};  
+        Pearson_correlation_all{z, 4} = Pearson_correlation{4}; 
+        Cross_correlation_all{z, 1} = Cross_correlation{1};  
+        Cross_correlation_all{z, 2} = Cross_correlation{2};  
+        Cross_correlation_all{z, 3} = Cross_correlation{3};  
+        Cross_correlation_all{z, 4} = Cross_correlation{4}; 
+        Granger_causality_A_all{z, 1} = Granger_causality_A{1};  
+        Granger_causality_A_all{z, 2} = Granger_causality_A{2};  
+        Granger_causality_A_all{z, 3} = Granger_causality_A{3};  
+        Granger_causality_A_all{z, 4} = Granger_causality_A{4}; 
+        Granger_causality_B_all{z, 1} = Granger_causality_B{1};  
+        Granger_causality_B_all{z, 2} = Granger_causality_B{2};  
+        Granger_causality_B_all{z, 3} = Granger_causality_B{3};  
+        Granger_causality_B_all{z, 4} = Granger_causality_B{4}; 
+        Mutual_information_all{z, 1} = Mutual_information{1};  
+        Mutual_information_all{z, 2} = Mutual_information{2};  
+        Mutual_information_all{z, 3} = Mutual_information{3};  
+        Mutual_information_all{z, 4} = Mutual_information{4}; 
+        Transfer_entropy_A_all{z, 1} = Transfer_entropy_A{1};  
+        Transfer_entropy_A_all{z, 2} = Transfer_entropy_A{2};  
+        Transfer_entropy_A_all{z, 3} = Transfer_entropy_A{3};  
+        Transfer_entropy_A_all{z, 4} = Transfer_entropy_A{4}; 
+        Transfer_entropy_B_all{z, 1} = Transfer_entropy_B{1};  
+        Transfer_entropy_B_all{z, 2} = Transfer_entropy_B{2};  
+        Transfer_entropy_B_all{z, 3} = Transfer_entropy_B{3};  
+        Transfer_entropy_B_all{z, 4} = Transfer_entropy_B{4}; 
+    end
+end
+save('C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures_delay_10msbin\FCresults_delay.mat', ...
+        'Pearson_correlation_all', 'Cross_correlation_all', 'Granger_causality_A_all', 'Granger_causality_B_all', ...
+        'Mutual_information_all', 'Transfer_entropy_A_all', 'Transfer_entropy_B_all');
+
+%% shuffle trial
+
+[numRows, numCols] = size(CD_proj_delay_all);
+for i = 1:numRows
+    for j = 1:numCols
+        dataMatrix = CD_proj_delay_all{i, j};  
+        [numTimePoints, numTrials] = size(dataMatrix);
+        randomOrder = randperm(numTrials);
+        dataMatrix = dataMatrix(:, randomOrder);
+        CD_proj_delay_all{i, j} = dataMatrix;
+    end
+end
+
+region = {'SC';'MRN';'SNr';'ALM'};
+z = 0;
+Pearson_correlation_all = cell(6,4); 
+Cross_correlation_all = cell(6,4); 
+Granger_causality_A_all = cell(6,4); 
+Granger_causality_B_all = cell(6,4); 
+Mutual_information_all = cell(6,4); 
+Transfer_entropy_A_all = cell(6,4); 
+Transfer_entropy_B_all = cell(6,4); 
+javaaddpath('D:\Matlab2024a\matlab_jidt\infodynamics.jar');
+
+for regionA = 1: 3
+    for regionB = regionA+1: 4
+
+        z = z+1;
+        trial_number = cell(1, 4);
+        for i_type = 1: 4
+            trial_number{i_type} = intersect( trial_all{regionA, i_type}, trial_all{regionB, i_type} );
+        end
+        Index_A = cell(4, 1);
+        Index_B = cell(4, 1);
+        for i = 1:4
+            Index_A{i} = find(ismember(trial_all{regionA, i}, trial_number{i}));
+            Index_B{i} = find(ismember(trial_all{regionB, i}, trial_number{i}));
+        end
+
+        Pearson_correlation = cell(1, 4);
+        Cross_correlation = cell(1, 4);
+        Granger_causality_A = cell(1, 4);
+        Granger_causality_B = cell(1, 4);
+        Mutual_information = cell(1, 4);
+        Transfer_entropy_A = cell(1, 4);
+        Transfer_entropy_B = cell(1, 4);
+
+        for i_condition = 1:4 % 四种条件/trial type
+            CD_proj_selectedA = CD_proj_delay_all{regionA, i_condition}(:, Index_A{i_condition});
+            CD_proj_selectedB = CD_proj_delay_all{regionB, i_condition}(:, Index_B{i_condition});
+            if size(CD_proj_selectedA) ~= size(CD_proj_selectedB)
+                error('两个矩阵的大小必须相等，Timepoints × Trials');
+            end
+            trial_number = size(CD_proj_selectedA, 2);
+
+            Pearson_correlation{i_condition} = NaN(trial_number, 1); 
+            Cross_correlation{i_condition} = []; 
+            Granger_causality_A{i_condition} = NaN(trial_number, 1);  
+            Granger_causality_B{i_condition} = NaN(trial_number, 1);  
+            Mutual_information{i_condition} = NaN(trial_number, 1); 
+            Transfer_entropy_A{i_condition} = NaN(trial_number, 1);  
+            Transfer_entropy_B{i_condition} = NaN(trial_number, 1);  
+
+            for func_conn = 1:trial_number
+                Pearson_correlation{i_condition} (func_conn) = corr(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn), 'Type', 'Pearson');
+                
+                [cc, lags] = xcorr(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn), 'coeff');
+                Cross_correlation{i_condition}(func_conn,:) = cc; 
+
+                GCmatrix = [CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn)];
+                [AIC,BIC,moAIC,moBIC] = tsdata_to_infocrit(GCmatrix', 20, 'LWR', false);  % Model order estimation, 'LWR' or 'OLS'
+                [A, SIG] = tsdata_to_var(GCmatrix', moBIC, 'LWR'); % VAR model estimation, or 'actual', 'moAIC', numerical value)
+                [F, Fsig] = var_to_pwcgc(A, SIG, GCmatrix', 'LWR', 'F'); % select GC value or p-value 
+                Granger_causality_A{i_condition} (func_conn) = F(1, 2); 
+                Granger_causality_B{i_condition} (func_conn) = F(2, 1); % effective connectivity
+                
+                miCalc = javaObject('infodynamics.measures.continuous.kraskov.MutualInfoCalculatorMultiVariateKraskov1');
+                miCalc.initialise(1, 1);  
+                miCalc.setObservations(octaveToJavaDoubleArray(CD_proj_selectedA(:, func_conn)), octaveToJavaDoubleArray(CD_proj_selectedB(:, func_conn)));
+                Mutual_information{i_condition} (func_conn) = miCalc.computeAverageLocalOfObservations();
+                
+                teCalc = javaObject('infodynamics.measures.continuous.kraskov.TransferEntropyCalculatorKraskov');
+                teCalc.initialise(1);  % 设置历史长度lag为 1 (Schreiber k=1)
+                teCalc.setProperty('k', '4');  % 设置 Kraskov 方法的参数 K = 4（使用 4 个最近邻点）
+                teCalc.setProperty("NOISE_LEVEL_TO_ADD", "0");
+                teCalc.setObservations(CD_proj_selectedA(:, func_conn), CD_proj_selectedB(:, func_conn));
+                Transfer_entropy_A{i_condition} (func_conn) = teCalc.computeAverageLocalOfObservations();
+                teCalc.setObservations(CD_proj_selectedB(:, func_conn), CD_proj_selectedA(:, func_conn));
+                Transfer_entropy_B{i_condition} (func_conn) = teCalc.computeAverageLocalOfObservations();
+
+            end
+        end
+
+        Pearson_correlation_all{z, 1} = Pearson_correlation{1};  
+        Pearson_correlation_all{z, 2} = Pearson_correlation{2};  
+        Pearson_correlation_all{z, 3} = Pearson_correlation{3};  
+        Pearson_correlation_all{z, 4} = Pearson_correlation{4}; 
+        Cross_correlation_all{z, 1} = Cross_correlation{1};  
+        Cross_correlation_all{z, 2} = Cross_correlation{2};  
+        Cross_correlation_all{z, 3} = Cross_correlation{3};  
+        Cross_correlation_all{z, 4} = Cross_correlation{4}; 
+        Granger_causality_A_all{z, 1} = Granger_causality_A{1};  
+        Granger_causality_A_all{z, 2} = Granger_causality_A{2};  
+        Granger_causality_A_all{z, 3} = Granger_causality_A{3};  
+        Granger_causality_A_all{z, 4} = Granger_causality_A{4}; 
+        Granger_causality_B_all{z, 1} = Granger_causality_B{1};  
+        Granger_causality_B_all{z, 2} = Granger_causality_B{2};  
+        Granger_causality_B_all{z, 3} = Granger_causality_B{3};  
+        Granger_causality_B_all{z, 4} = Granger_causality_B{4}; 
+        Mutual_information_all{z, 1} = Mutual_information{1};  
+        Mutual_information_all{z, 2} = Mutual_information{2};  
+        Mutual_information_all{z, 3} = Mutual_information{3};  
+        Mutual_information_all{z, 4} = Mutual_information{4}; 
+        Transfer_entropy_A_all{z, 1} = Transfer_entropy_A{1};  
+        Transfer_entropy_A_all{z, 2} = Transfer_entropy_A{2};  
+        Transfer_entropy_A_all{z, 3} = Transfer_entropy_A{3};  
+        Transfer_entropy_A_all{z, 4} = Transfer_entropy_A{4}; 
+        Transfer_entropy_B_all{z, 1} = Transfer_entropy_B{1};  
+        Transfer_entropy_B_all{z, 2} = Transfer_entropy_B{2};  
+        Transfer_entropy_B_all{z, 3} = Transfer_entropy_B{3};  
+        Transfer_entropy_B_all{z, 4} = Transfer_entropy_B{4}; 
+    end
+end
+save('C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures_delay_10msbin\FCresults_delay_shuffle.mat', ...
+        'Pearson_correlation_all', 'Cross_correlation_all', 'Granger_causality_A_all', 'Granger_causality_B_all', ...
+        'Mutual_information_all', 'Transfer_entropy_A_all', 'Transfer_entropy_B_all');
 
 %% FC visualization
-data_sets = {'Pearson_correlation_all', 'Granger_causality_A_all', 'Granger_causality_B_all', 'Mutual_information_all','Transfer_entropy_A_all', 'Transfer_entropy_B_all'};
+%sktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures_10msbin\FCresults.mat');
+load('C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures_delay_10msbin\FCresults_delay_shuffle.mat');
 titles = {'Pearson Correlation', 'Granger Causality A', 'Granger Causality B', 'Mutual Information', 'Transfer Entropy A', 'Transfer Entropy B'};
+data_sets = {'Pearson_correlation_all', 'Granger_causality_A_all', 'Granger_causality_B_all', 'Mutual_information_all', 'Transfer_entropy_A_all', 'Transfer_entropy_B_all'};
 subplots_titles1 = {'SC--MRN', 'SC--SNr', 'SC--ALM', 'MRN--SNr', 'MRN--ALM', 'SNr--ALM'};
 subplots_titles2 = {'SC-->MRN', 'SC-->SNr', 'SC-->ALM', 'MRN-->SNr', 'MRN-->ALM', 'SNr-->ALM'};
 subplots_titles3 = {'SC<--MRN', 'SC<--SNr', 'SC<--ALM', 'MRN<--SNr', 'MRN<--ALM', 'SNr<--ALM'};
 subplots_titles = {subplots_titles1, subplots_titles2, subplots_titles3, subplots_titles1, subplots_titles2, subplots_titles3};
-ylimitations = {[-0.2 0.2], [0 0.01], [0 0.01], [0 0.55], [-0.02 1.2] , [-0.02 1.2]};
-save_path = 'C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures2\';
+ylimitations = {[-0.3 0.2], [-0.03 0.03], [-0.03 0.03], [-0.5 0.5], [-0.1 1.4] , [-0.1 1.4]};
+save_path = 'C:\Users\XinHao\Desktop\WM_DualCircuit\data\CIBRZC85\2024_01_15\FCfigures_delay_10msbin\shuffle\';
+conditions = {'YesCorrect', 'NoCorrect', 'YesError', 'NoError'};
+colors = {'#018A67', '#1868B2', '#F3A332', '#DE582B'}; 
+
 % subgroups
 for d = 1:length(data_sets)
     figure;
@@ -698,7 +951,10 @@ for d = 1:length(data_sets)
             group_labels = [group_labels; repmat(i, length(plotdata{i}), 1)];
         end
         x = 1:4;  
-        violinplot(all_data, group_labels, 'ShowMean', true);
+        vp = violinplot(all_data, group_labels,  'ShowMean', true);
+        for i = 1:length(vp)
+            vp(i).ViolinColor = colors{i}; % 修改颜色（RGB格式）
+        end
         ylim(ylimitations{d});
         title(subplots_titles{d}{z});
         xticks(x);
@@ -712,35 +968,33 @@ for d = 1:length(data_sets)
     close(gcf);  
 end
 
-% total trials
-for d = 1:length(data_sets)
-    figure;
-    currentdata = eval(data_sets{d});
-    for i = 1:6
-        subplot(3, 2, i); hold on;
-        all_data = []; 
-        for j = 1:4
-            data = currentdata(i, j);
-            if isempty(data)
-                continue;
-            end
-            all_data = [all_data; data];
-        end
-        all_data = vertcat(all_data{:});
-        violinplot(all_data);
-        xticklabels({'Total Trials'});
-        ylim(ylimitations{d});
-        ylabel(titles{d});
-        title(subplots_titles{d}{z});
-    end
-    sgtitle(strrep(data_sets{d}, '_', ' '));  
-    saveas(gcf, fullfile(save_path, [data_sets{d}, '_total.png']));  
-    close(gcf);  
-end
+% % total trials
+% for d = 1:length(data_sets)
+%     figure;
+%     currentdata = eval(data_sets{d});
+%     for i = 1:6
+%         subplot(3, 2, i); hold on;
+%         all_data = []; 
+%         for j = 1:4
+%             data = currentdata(i, j);
+%             if isempty(data)
+%                 continue;
+%             end
+%             all_data = [all_data; data];
+%         end
+%         all_data = vertcat(all_data{:});
+%         violinplot(all_data);
+%         xticklabels({'Total Trials'});
+%         ylim(ylimitations{d});
+%         ylabel(titles{d});
+%         title(subplots_titles{d}{z});
+%     end
+%     sgtitle(strrep(data_sets{d}, '_', ' '));  
+%     saveas(gcf, fullfile(save_path, [data_sets{d}, '_total.png']));  
+%     close(gcf);  
+% end
 
 % cross correlation plots
-conditions = {'YesCorrect', 'NoCorrect', 'YesError', 'NoError'};
-colors = {'#018A67', '#1868B2', '#F3A332', '#DE582B'}; 
 figure;
 for i = 1:6
     subplot(3, 2, i); hold on;
@@ -749,17 +1003,19 @@ for i = 1:6
         mean_data = mean(data, 1);  
         std_data = std(data, 0, 1);
         plot(mean_data, 'Color', colors{j}, 'LineWidth', 2);
-        [max_val, max_idx] = max(mean_data);
-        plot(max_idx, max_val, 'o', 'Color', colors{j}, 'MarkerFaceColor', colors{j}, 'MarkerSize', 6); 
-        text(max_idx, max_val, sprintf('(%d, %.2f)', max_idx, max_val), ...
-             'FontSize', 10, 'Color', colors{j}, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'right');
+        % [max_val, max_idx] = max(mean_data);
+        % plot(max_idx, max_val, 'o', 'Color', colors{j}, 'MarkerFaceColor', colors{j}, 'MarkerSize', 6); 
+        % text(max_idx, max_val, sprintf('(%d, %.2f)', max_idx, max_val), ...
+        %      'FontSize', 10, 'Color', colors{j}, 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'right');
         %fill([1:length(mean_data), fliplr(1:length(mean_data))],[mean_data + std_data, fliplr(mean_data - std_data)],colors{j}, 'FaceAlpha', 0.3, 'EdgeColor', 'none');
     end
+    mid_x = floor(length(mean_data) / 2);
+    xline(mid_x, '--k', 'LineWidth', 1.5); % 黑色虚线
     title(subplots_titles1{i});
     xlabel('Lags (point)');
     ylabel('correlation');
-    ylim([-0.2, 0.2]);  
-    legend(conditions, 'Location', 'bestoutside', 'FontSize', 10, 'Box', 'off');
+    ylim([-0.2, 0.15]);  
+    %legend(conditions, 'Location', 'bestoutside', 'FontSize', 10, 'Box', 'off');
 end
 sgtitle('Cross Correlation');
 saveas(gcf, fullfile(save_path, 'crosscorr_allpoint.png'));  
